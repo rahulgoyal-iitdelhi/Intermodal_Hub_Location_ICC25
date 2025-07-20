@@ -6,8 +6,8 @@ import time
 from pyomo.environ import *
 
 # Load data
-quantities_df = pd.read_csv("quantities_all.csv")  # Still using for locations
-hubs = pd.read_csv("hubs.csv")
+quantities_df = pd.read_csv("quantities_new.csv")  # Still using for locations
+hubs = pd.read_csv("stations.csv")
 
 # Parameters
 alpha = 1  # Discount factor for inter-hub transport
