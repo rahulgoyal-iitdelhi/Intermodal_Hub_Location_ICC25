@@ -1,171 +1,168 @@
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
 import time
 
-# ---------------------- CONFIGURATION ------------------------
-np.random.seed(41)
-num_points = 5
-start_time = time.time()
-
-# ---------------------- LOAD DATA ------------------------
-quantities_df = pd.read_csv('quantities_all.csv')
-hubs_df = pd.read_csv('hubs.csv')
-
-ij_pairs = quantities_df[['Start_Lat', 'Start_Lon', 'Destination_Lat', 'Destination_Lon']].values
-kl_array = hubs_df[['Latitude', 'Longitude']].values
-num_kl = len(kl_array)
-
-# ---------------------- DISTANCE UTILITY ------------------------
-def fast_squared_distance(a, b):
-    return np.sum((a - b) ** 2, axis=1)
-
-def total_squared_distance_batch(i, j, k, l, m, n):
-    return (
-        fast_squared_distance(i, m) +
-        fast_squared_distance(m, k) +
-        fast_squared_distance(k, l) +
-        fast_squared_distance(l, n) +
-        fast_squared_distance(n, j)
-    )
-
-# ---------------------- OBJECTIVE FUNCTION ------------------------
-def objective(mn_flat, ij_pairs, kl_array, num_points, beta, epsilon=1e-8):
-    mn = mn_flat.reshape((num_points, 2))
-    m_idx, n_idx = np.meshgrid(np.arange(num_points), np.arange(num_points))
-    m_points = mn[m_idx.ravel()]
-    n_points = mn[n_idx.ravel()]
-    mn_len = len(m_points)
-
-    k_idx, l_idx = np.meshgrid(np.arange(num_kl), np.arange(num_kl))
-    k_points = kl_array[k_idx.ravel()]
-    l_points = kl_array[l_idx.ravel()]
-    kl_len = len(k_points)
-
-    m_tile = np.repeat(m_points, kl_len, axis=0)
-    n_tile = np.repeat(n_points, kl_len, axis=0)
-    k_tile = np.tile(k_points, (mn_len, 1))
-    l_tile = np.tile(l_points, (mn_len, 1))
-
-    total_logsum = 0.0
-
-    for i_j in ij_pairs:
-        i = np.full_like(m_tile, i_j[:2])
-        j = np.full_like(m_tile, i_j[2:])
-
-        dists = total_squared_distance_batch(i, j, k_tile, l_tile, m_tile, n_tile)
-        max_val = -beta * np.min(dists)
-        logsum = max_val + np.log(np.sum(np.exp(-beta * dists - max_val)) + epsilon)
-        total_logsum += logsum
-    total_logsum=(1/beta)*total_logsum
-
-    return -total_logsum
-
-# ---------------------- OPTIMIZATION WRAPPER ------------------------
-def gradient_descent(ij_pairs, kl_array, num_points, beta, initial_mn, max_iter=300):
-    result = minimize(
-        objective,
-        initial_mn,
-        args=(ij_pairs, kl_array, num_points, beta),
-        method='L-BFGS-B',
-        options={'maxiter': max_iter, 'disp': False}
-    )
-    return result.x, result.fun, result.nit
-
-# ---------------------- INITIALIZATION ------------------------
-lat_min, lat_max = hubs_df['Latitude'].min(), hubs_df['Latitude'].max()
-lon_min, lon_max = hubs_df['Longitude'].min(), hubs_df['Longitude'].max()
-
-initial_mn = np.zeros(num_points * 2)
-initial_mn[::2] = np.random.uniform(lat_min, lat_max, num_points)
-initial_mn[1::2] = np.random.uniform(lon_min, lon_max, num_points)
-
-# ---------------------- OPTIMIZATION LOOP ------------------------
-beta = 0.001
-beta_max = 1000
+###############################################################################
+# 0. Parameters and Data Loading
+###############################################################################
+a = time.time()
+np.random.seed(42)
+M = 3     # number of hubs
+beta_initial = 0.001
+beta_max = 1000.0
 k = 1.85
 
-while beta < beta_max:
-    print(f"Current beta: {beta:.4f}")
-    hubs = np.round(initial_mn.reshape(-1, 2), 3)
-    kl_array=np.vstack((kl_array,hubs))
-    optimized_mn, final_obj_val, num_iter = gradient_descent(
-        ij_pairs, kl_array, num_points, beta, initial_mn
-    )
-    print(f"Final objective: {final_obj_val:.4f} after {num_iter} iterations")
-    initial_mn = optimized_mn
+max_inner_iters = 500
+tol_inner = 1e-4
+
+# Load data
+quantities_df = pd.read_csv('quantities_new.csv', encoding='utf-8-sig')
+hubs_df = pd.read_csv('hubs.csv', encoding='utf-8-sig')
+
+origins = quantities_df[['Start_Lat', 'Start_Lon']].to_numpy()
+destinations = quantities_df[['Destination_Lat', 'Destination_Lon']].to_numpy()
+rails = hubs_df[['Latitude', 'Longitude']].to_numpy()
+
+N = len(origins)
+R = len(rails)
+
+###############################################################################
+# 1. Stable DA Update Function (Squared Euclidean distances here)
+###############################################################################
+def compute_updated_hubs(hubs, origins, destinations, rails, beta):
+    N, _ = origins.shape
+    M, _ = hubs.shape
+    R, _ = rails.shape
+    bias = np.random.normal(scale=1e-6, size=(M, 2))
+    biased_hubs = hubs + bias
+
+    d0 = np.sum((origins[:, np.newaxis, :] - hubs[np.newaxis, :, :]) ** 2, axis=2)
+    d1 = np.sum((biased_hubs[:, np.newaxis, :] - rails[np.newaxis, :, :]) ** 2, axis=2)
+    d2 = np.sum((rails[:, np.newaxis, :] - rails[np.newaxis, :, :]) ** 2, axis=2)
+    dist_rf = np.sum((rails[:, np.newaxis, :] - hubs[np.newaxis, :, :]) ** 2, axis=2)
+    dist_fd = np.sum((destinations[:, np.newaxis, :] - hubs[np.newaxis, :, :]) ** 2, axis=2)
+
+    d3 = dist_fd[:, np.newaxis, :] + dist_rf[np.newaxis, :, :]
+
+    L3 = -beta * d3
+    max_L3 = np.max(L3, axis=2, keepdims=True)
+    exp_L3 = np.exp(L3 - max_L3)
+    sum_exp_L3 = np.sum(exp_L3, axis=2, keepdims=True)
+    p3 = exp_L3 / sum_exp_L3
+    Z3 = sum_exp_L3[..., 0] * np.exp(max_L3[..., 0])
+
+    L2_base = -beta * d2
+    logZ3 = np.log(Z3 + 1e-300)
+    L2 = L2_base[np.newaxis, :, :] + logZ3[:, np.newaxis, :]
+    max_L2 = np.max(L2, axis=2, keepdims=True)
+    exp_L2 = np.exp(L2 - max_L2)
+    sum_exp_L2 = np.sum(exp_L2, axis=2, keepdims=True)
+    p2 = exp_L2 / sum_exp_L2
+    Z2 = sum_exp_L2[..., 0] * np.exp(max_L2[..., 0])
+
+    L1_base = -beta * d1
+    logZ2 = np.log(Z2 + 1e-300)
+    L1 = L1_base[np.newaxis, :, :] + logZ2[:, np.newaxis, :]
+    max_L1 = np.max(L1, axis=2, keepdims=True)
+    exp_L1 = np.exp(L1 - max_L1)
+    sum_exp_L1 = np.sum(exp_L1, axis=2, keepdims=True)
+    p1 = exp_L1 / sum_exp_L1
+    Z1 = sum_exp_L1[..., 0] * np.exp(max_L1[..., 0])
+
+    L0_base = -beta * d0
+    logZ1 = np.log(Z1 + 1e-300)
+    L0 = L0_base + logZ1
+    max_L0 = np.max(L0, axis=1, keepdims=True)
+    exp_L0 = np.exp(L0 - max_L0)
+    sum_exp_L0 = np.sum(exp_L0, axis=1, keepdims=True)
+    p0 = exp_L0 / sum_exp_L0
+
+    A1_diag = np.sum(p0, axis=0)
+
+    U = np.einsum('nf,nfr->nr', p0, p1)
+    V = np.einsum('nr,nrs->ns', U, p2)
+    W = np.einsum('ns,nsm->nm', V, p3)
+
+    A2_diag = np.sum(W, axis=0)
+
+    B1 = p0.T
+    B1Xi = B1 @ origins
+
+    B2 = W.T
+    B2Xj = B2 @ destinations
+
+    C1 = np.einsum('nm,nmr->mr', p0, p1)
+    C1R = C1 @ rails
+
+    C2 = np.einsum('nr,nrm->mr', V, p3)
+    C2R = C2 @ rails
+
+    A_diag = A1_diag + A2_diag
+    RHS = B1Xi + B2Xj + C1R + C2R
+    Y = 0.5 * (RHS / (A_diag[:, np.newaxis] + 1e-4))
+
+    return Y
+
+###############################################################################
+# 2. DA Loop
+###############################################################################
+lat_min, lon_min = np.min(rails, axis=0)
+lat_max, lon_max = np.max(rails, axis=0)
+
+hubs = np.array([
+    [np.random.uniform(lat_min, lat_max), np.random.uniform(lon_min, lon_max)]
+    for _ in range(M)
+])
+
+print("Initial hubs:\n", hubs)
+initial_hubs = hubs.copy()
+beta = beta_initial
+outer_iteration = 0
+
+while beta <= beta_max:
+    outer_iteration += 1
+    print(f"\n=== Outer iteration {outer_iteration}: beta = {beta:.4f} ===")
+    for inner_iter in range(1, max_inner_iters + 1):
+        new_hubs = compute_updated_hubs(hubs, origins, destinations, rails, beta)
+        max_change = np.max(np.linalg.norm(new_hubs - hubs, axis=1))
+        print(f"  [beta={beta:.4f}] Inner iter {inner_iter:3d}: max hub shift = {max_change:.6f}")
+        hubs = new_hubs
+        if max_change < tol_inner:
+            print(f"  Converged at inner iteration {inner_iter} (tol={tol_inner}).")
+            break
+    else:
+        print(f"  Reached max_inner_iters={max_inner_iters} without inner convergence.")
+    print(" ? hubs after this beta:\n", hubs)
     beta *= k
-    
 
+final_hubs = hubs.copy()
+print("\n*** Final hub coordinates after annealing (M x 2): ***")
+print(final_hubs)
+print("Computational time is ", time.time() - a)
 
-total_time = time.time() - start_time
-print(f"Computation time: {total_time:.2f} seconds")
+###############################################################################
+# 3. Post-DA: Objective Calculation (uses SQUARED Euclidean, unchanged)
+###############################################################################
+beta_final = beta / k  # last beta used
 
-# Save results to file
-with open("computation_results.txt", "w") as f:
-    f.write(f"Computation time: {total_time:.6f} seconds\n")
-    f.write(f"Final objective value: {final_obj_val:.6f}\n")
-    f.write(f"Final beta: {beta:.6f}\n")
-    f.write("Optimized hub coordinates:\n")
-    for i in range(num_points):
-        lat = optimized_mn[2*i]
-        lon = optimized_mn[2*i+1]
-        f.write(f"Hub {i+1}: Lat = {lat:.6f}, Lon = {lon:.6f}\n")
+d0 = np.sum((origins[:, np.newaxis, :] - final_hubs[np.newaxis, :, :]) ** 2, axis=2)        # [N, M]
+d1 = np.sum((final_hubs[:, np.newaxis, :] - rails[np.newaxis, :, :]) ** 2, axis=2)          # [M, R]
+d2 = np.sum((rails[:, np.newaxis, :] - rails[np.newaxis, :, :]) ** 2, axis=2)               # [R, R]
+d3 = np.sum((rails[:, np.newaxis, :] - final_hubs[np.newaxis, :, :]) ** 2, axis=2)          # [R, M]
+d4 = np.sum((final_hubs[:, np.newaxis, :] - destinations[np.newaxis, :, :]) ** 2, axis=2)   # [M, N]
 
-# ---------------------- POSTPROCESSING WITH SQUARED DISTANCE ------------------------
-from scipy.special import softmax
-from itertools import product
+D0 = d0[:, :, np.newaxis, np.newaxis, np.newaxis]
+D1 = d1[np.newaxis, :, :, np.newaxis, np.newaxis]
+D2 = d2[np.newaxis, np.newaxis, :, :, np.newaxis]
+D3 = d3[np.newaxis, np.newaxis, np.newaxis, :, :]
+D4 = d4.T[:, np.newaxis, np.newaxis, np.newaxis, :]
 
-ij_pairs = [
-    (np.array([row['Start_Lat'], row['Start_Lon']]), np.array([row['Destination_Lat'], row['Destination_Lon']]))
-    for _, row in quantities_df.iterrows()
-]
+total_distance = D0 + D1 + D2 + D3 + D4
 
-hubs = np.round(optimized_mn.reshape(-1, 2), 3)
-kl_array=np.vstack((kl_array,hubs))
-stations = kl_array
-results = []
+L = -beta_final * total_distance
+L_max = np.max(L, axis=(1, 2, 3, 4), keepdims=True)
+sum_exp = np.sum(np.exp(L - L_max), axis=(1, 2, 3, 4))
+logsumexp = np.log(sum_exp) + L_max.squeeze()
 
-combs = list(product(hubs, stations, stations, hubs))
-num_combs = len(combs)
-
-m_arr = np.array([c[0] for c in combs])
-k_arr = np.array([c[1] for c in combs])
-l_arr = np.array([c[2] for c in combs])
-n_arr = np.array([c[3] for c in combs])
-
-for idx, (i, j) in enumerate(ij_pairs):
-    print(f"\nProcessing pair {idx+1}: i={i}, j={j}")
-    
-    i_arr = np.repeat(i[np.newaxis, :], num_combs, axis=0)
-    j_arr = np.repeat(j[np.newaxis, :], num_combs, axis=0)
-
-    dist = (
-        np.sum((i_arr - m_arr) ** 2, axis=1) +
-        np.sum((m_arr - k_arr) ** 2, axis=1) +
-        np.sum((k_arr - l_arr) ** 2, axis=1) +
-        np.sum((l_arr - n_arr) ** 2, axis=1) +
-        np.sum((n_arr - j_arr) ** 2, axis=1)
-    )
-
-    weights = softmax(-beta * dist)
-
-    results.append({
-        'i_x': i[0], 'i_y': i[1],
-        'j_x': j[0], 'j_y': j[1],
-        'm_x': np.dot(weights, m_arr[:, 0]),
-        'm_y': np.dot(weights, m_arr[:, 1]),
-        'k_x': np.dot(weights, k_arr[:, 0]),
-        'k_y': np.dot(weights, k_arr[:, 1]),
-        'l_x': np.dot(weights, l_arr[:, 0]),
-        'l_y': np.dot(weights, l_arr[:, 1]),
-        'n_x': np.dot(weights, n_arr[:, 0]),
-        'n_y': np.dot(weights, n_arr[:, 1]),
-        'distance': np.dot(weights, dist),
-        'limit': 1
-    })
-
-results_df = pd.DataFrame(results)
-results_df.to_csv("postprocessed_results_squared.csv", index=False)
-
-print("\n? Optimization and squared-distance-based post-processing completed.")
+objective = -1 / beta_final * np.sum(logsumexp)
+print(f"Objective (sum over i of log-sum-exp): {objective:.6f}")
