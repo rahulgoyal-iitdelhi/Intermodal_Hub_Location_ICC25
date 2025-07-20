@@ -7,12 +7,12 @@ from pyomo.environ import *
 from scipy.spatial.distance import cdist
 
 # Load data
-quantities_df = pd.read_csv("quantities_all.csv")
-hubs = pd.read_csv("big_hubs.csv")
+quantities_df = pd.read_csv("quantities_new.csv")
+hubs = pd.read_csv("stations.csv")
 
 # Parameters
 alpha = 1  # Discount factor for inter-hub transport
-P = 10      # Number of hubs to open
+P = 5      # Number of hubs to open
 
 # Start timer
 start_time = time.time()
