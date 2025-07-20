@@ -7,8 +7,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 import numpy as np
 
 # ---------------------- LOAD DATA ------------------------
-quantities = pd.read_csv('quantities_all.csv')
-hubs       = pd.read_csv('hubs.csv')
+quantities = pd.read_csv('quantities_new.csv')
+hubs       = pd.read_csv('stations.csv')
 
 # OD pairs as [P,2]
 I = torch.tensor(
@@ -27,7 +27,7 @@ K0 = torch.tensor(
 )
 
 P = I.size(0)
-M = 5 # number of moving hubs
+M = 3 # number of moving hubs
 
 # Bounding box for initialization
 lat_min, lat_max = float(hubs['Latitude'].min()), float(hubs['Latitude'].max())
@@ -59,7 +59,7 @@ def loss_fn(mn, K0, beta):
 
 # ---------------------- MAIN beta-LOOP w/ Adam + Scheduler ------------------------
 beta      = 0.001
-beta_max  = 70
+beta_max  = 1000
 k         = 1.25
 
 start = time.time()
@@ -117,8 +117,8 @@ final_hubs = mn.detach().cpu().numpy()
 #hubs=np.array(mn)
 #final_hubs=hubs
 # Reload input data to numpy
-quantities_df = pd.read_csv('quantities_all.csv')
-hubs_df = pd.read_csv('hubs.csv')
+quantities_df = pd.read_csv('quantities_new.csv')
+hubs_df = pd.read_csv('stations.csv')
 
 origins = quantities_df[['Start_Lat', 'Start_Lon']].to_numpy()
 destinations = quantities_df[['Destination_Lat', 'Destination_Lon']].to_numpy()
